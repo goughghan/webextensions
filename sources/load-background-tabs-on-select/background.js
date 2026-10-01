@@ -87,32 +87,44 @@ async function setToStorage(id, value) {
 
   let wasActive = new Set();
 
+  function shouldDiscard(tab) {
+    if (
+      typeof tab.id !== "number" ||
+      tab.discarded ||
+      tab.active ||
+      tab.hidden ||
+      wasActive.has(tab.id) ||
+      manually_disabled ||
+      !tab.url?.startsWith("http")
+    ) {
+      return false;
+    }
+
+    const mre = matchesRegEx(tab.url);
+    return (
+      (mode && mre) || // blacklist(true) => matches are not allowed to load
+      (!mode && !mre) // whitelist(false) => matches are allowed to load <=> no match => not allowed
+    );
+  }
+
+  function discardIfNeeded(tab) {
+    if (shouldDiscard(tab)) {
+      // A tab can become active or close between query/onUpdated and discard.
+      // In either case there is nothing to do.
+      browser.tabs.discard(tab.id).catch(() => {});
+    }
+  }
+
   browser.tabs.onUpdated.addListener(
     (tabId, changeInfo, tab) => {
-      // ignore
-      if (
-        !(
-          tab.discarded ||
-          tab.active ||
-          tab.hidden ||
-          wasActive.has(tabId) ||
-          manually_disabled ||
-          !changeInfo.url.startsWith("http")
-        )
-      ) {
-        const mre = matchesRegEx(tab.url);
-
-        if (
-          (mode && mre) || // blacklist(true) => matches are not allowed to load
-          (!mode && !mre) // whitelist(false) => matches are allowed to load <=> no match => not allowed
-        ) {
-          browser.tabs.discard(tabId);
-          // console.debug("discarded", tab.url);
-        }
-      }
+      discardIfNeeded(tab);
     },
     { properties: ["url"] },
   );
+
+  // Firefox may create fixed homepage tabs before this background script is
+  // ready. Apply the same rule once to those already-created background tabs.
+  browser.tabs.query({}).then((tabs) => tabs.forEach(discardIfNeeded));
 
   browser.tabs.onActivated.addListener((activeInfo) => {
     if (!wasActive.has(activeInfo.tabId)) {
